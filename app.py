@@ -76,19 +76,12 @@ st.markdown("""
 # -------------------------------------------------------
 # API KEY HANDLING
 # -------------------------------------------------------
-demo_key = "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"
-
-paths = [
-    "/Users/manan/.streamlit/secrets.toml",
-    "/Users/manan/Desktop/Department_Bot/.streamlit/secrets.toml"
-]
-
-api_key = demo_key
-if any(os.path.exists(p) for p in paths):
-    try:
-        api_key = st.secrets["OPENAI_API_KEY"]
-    except:
-        api_key = demo_key
+# Try to get API key from Streamlit secrets first (for cloud deployment)
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+except:
+    # Fallback to demo key for local testing
+    api_key = "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"
 
 client = OpenAI(api_key=api_key)
 
