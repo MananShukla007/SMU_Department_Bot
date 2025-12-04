@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 st.set_page_config(
-    page_title="SMU COX Case Study Bot",
+    page_title="Case IQ Study Bot",
     page_icon="🎓",
     layout="wide"
 )
