@@ -6,9 +6,6 @@ from fpdf import FPDF
 import json
 from datetime import datetime
 
-# -------------------------------------------------------
-# PAGE CONFIG
-# -------------------------------------------------------
 st.set_page_config(
     page_title="SMU COX Case Study Bot",
     page_icon="🎓",
@@ -17,7 +14,6 @@ st.set_page_config(
 
 SMU_BLUE = "#0033A0"
 
-# KEEP ORIGINAL UI COLORS AND STYLING
 st.markdown("""
 <style>
     .stApp { 
@@ -66,28 +62,23 @@ st.markdown("""
         padding: 15px;
         margin: 10px 0;
     }
-    /* Hide empty container */
     .element-container:has(> .stMarkdown:empty) {
         display: none;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------------
-# API KEY HANDLING
-# -------------------------------------------------------
-# Try to get API key from Streamlit secrets first (for cloud deployment)
 try:
-    api_key = st.secrets["OPENAI_API_KEY"]
+    default_key = st.secrets.get("OPENAI_API_KEY", "")
 except:
-    # Fallback to demo key for local testing
-    api_key = "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"
+    default_key = ""
 
-client = OpenAI(api_key=api_key)
+if "api_key" not in st.session_state:
+    st.session_state.api_key = default_key
 
-# -------------------------------------------------------
-# HELPERS
-# -------------------------------------------------------
+if "client" not in st.session_state:
+    st.session_state.client = None
+
 def extract_text_from_file(uploaded_file):
     if uploaded_file is None:
         return ""
@@ -102,18 +93,7 @@ def extract_text_from_file(uploaded_file):
     return ""
 
 
-def extract_roles_and_people(case_text):
-    """
-    Extract ONLY meaningful roles:
-    - Named individuals (e.g., Maya, Jordan)
-    - Essential roles explicitly referenced (Barista)
-    EXCLUDE:
-    - Customers
-    - Mobile order customers
-    - POS operators
-    - Any generic implicit actor
-    """
-
+def extract_roles_and_people(case_text, client):
     system_prompt = """
 You are an expert case-study analyzer.
 
@@ -184,10 +164,7 @@ CASE STUDY:
 """
 
 
-def get_role_description(role, case_text):
-    """
-    Extract a brief description of the role from the case study
-    """
+def get_role_description(role, case_text, client):
     system_prompt = f"""
 You are analyzing a case study to provide a brief description of a specific role.
 
@@ -214,10 +191,7 @@ Keep it concise and factual. Return ONLY the description text, no extra formatti
         return f"{role['name']} is a key stakeholder in this case study."
 
 
-def get_case_summary(case_text):
-    """
-    Extract a brief summary of the case study
-    """
+def get_case_summary(case_text, client):
     system_prompt = """
 You are analyzing a case study to provide a brief overview.
 
@@ -243,26 +217,22 @@ Keep it concise and neutral. Return ONLY the summary text, no extra formatting.
 
 
 def export_chat_to_pdf(role_name, chat_history):
-    """Export chat history to PDF"""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
     
-    # Title
     title = f"Chat with {role_name}"
     pdf.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), ln=True, align="C")
     pdf.set_font("Arial", "", 10)
     pdf.cell(0, 10, f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="C")
     pdf.ln(10)
     
-    # Chat messages
     pdf.set_font("Arial", "", 11)
     for msg in chat_history:
         role = "You" if msg["role"] == "user" else role_name.encode('latin-1', 'replace').decode('latin-1')
         pdf.set_font("Arial", "B", 11)
         pdf.multi_cell(0, 8, f"{role}:")
         pdf.set_font("Arial", "", 11)
-        # Handle special characters in content
         content = msg["content"].encode('latin-1', 'replace').decode('latin-1')
         pdf.multi_cell(0, 6, content)
         pdf.ln(5)
@@ -270,9 +240,6 @@ def export_chat_to_pdf(role_name, chat_history):
     return pdf.output(dest="S").encode("latin-1", errors="replace")
 
 
-# -------------------------------------------------------
-# SESSION STATE INIT
-# -------------------------------------------------------
 if "case_study_text" not in st.session_state:
     st.session_state.case_study_text = ""
 
@@ -282,23 +249,18 @@ if "roles" not in st.session_state:
 if "selected_role" not in st.session_state:
     st.session_state.selected_role = None
 
-# Each role gets its own chat
 if "role_chats" not in st.session_state:
     st.session_state.role_chats = {}
 
-# Track if roles have been extracted
 if "roles_extracted" not in st.session_state:
     st.session_state.roles_extracted = False
 
-# Store role descriptions
 if "role_descriptions" not in st.session_state:
     st.session_state.role_descriptions = {}
 
-# Store case summary
 if "case_summary" not in st.session_state:
     st.session_state.case_summary = ""
 
-# Store PDF data for export
 if "pdf_data" not in st.session_state:
     st.session_state.pdf_data = None
 
@@ -306,70 +268,63 @@ if "pdf_filename" not in st.session_state:
     st.session_state.pdf_filename = ""
 
 
-# -------------------------------------------------------
-# LAYOUT
-# -------------------------------------------------------
 left, center, right = st.columns([1, 2, 1])
 
-# -------------------------------------------------------
-# RIGHT PANEL – CASE STUDY
-# -------------------------------------------------------
 with right:
     st.markdown("<h2>Case Study</h2>", unsafe_allow_html=True)
 
     upload = st.file_uploader("Upload Case Study", type=["pdf", "txt"], key="file_uploader")
     manual = st.text_area("Or paste case study text", height=200, key="manual_text")
 
-    # Button to process case study
     if st.button("📚 Load & Extract Roles", use_container_width=True, type="primary"):
-        case_text = ""
-        
-        if upload:
-            case_text = extract_text_from_file(upload)
-        elif manual.strip():
-            case_text = manual.strip()
-        
-        if case_text:
-            st.session_state.case_study_text = case_text
-            
-            # Extract roles only once
-            if not st.session_state.roles_extracted:
-                with st.spinner("Extracting roles and analyzing case study..."):
-                    # Extract roles
-                    st.session_state.roles = extract_roles_and_people(case_text)
-                    st.session_state.roles_extracted = True
-                    
-                    if st.session_state.roles:
-                        # Get case summary
-                        st.session_state.case_summary = get_case_summary(case_text)
-                        
-                        # Get description for each role
-                        for r in st.session_state.roles:
-                            label = f"{r['name']} ({r['title']})"
-                            st.session_state.role_descriptions[label] = get_role_description(r, case_text)
-                            
-                            # Initialize chat for all roles
-                            if label not in st.session_state.role_chats:
-                                st.session_state.role_chats[label] = []
-                        
-                        st.session_state.selected_role = st.session_state.roles[0]
-                
-                st.success(f"✅ Loaded! Found {len(st.session_state.roles)} roles.")
-                st.rerun()
+        if not st.session_state.api_key:
+            st.error("⚠️ Please enter your OpenAI API key in the left panel first!")
         else:
-            st.error("Please upload a file or paste text first!")
+            case_text = ""
+            
+            if upload:
+                case_text = extract_text_from_file(upload)
+            elif manual.strip():
+                case_text = manual.strip()
+            
+            if case_text:
+                st.session_state.case_study_text = case_text
+                
+                if not st.session_state.roles_extracted:
+                    with st.spinner("Extracting roles and analyzing case study..."):
+                        try:
+                            st.session_state.client = OpenAI(api_key=st.session_state.api_key)
+                            st.session_state.roles = extract_roles_and_people(case_text, st.session_state.client)
+                            st.session_state.roles_extracted = True
+                            
+                            if st.session_state.roles:
+                                st.session_state.case_summary = get_case_summary(case_text, st.session_state.client)
+                                
+                                for r in st.session_state.roles:
+                                    label = f"{r['name']} ({r['title']})"
+                                    st.session_state.role_descriptions[label] = get_role_description(r, case_text, st.session_state.client)
+                                    
+                                    if label not in st.session_state.role_chats:
+                                        st.session_state.role_chats[label] = []
+                                
+                                st.session_state.selected_role = st.session_state.roles[0]
+                            
+                            st.success(f"✅ Loaded! Found {len(st.session_state.roles)} roles.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
+                            st.error("Please check your API key and try again.")
+            else:
+                st.error("Please upload a file or paste text first!")
 
-    # Show case study if loaded
     if st.session_state.case_study_text and st.session_state.roles:
         st.markdown("---")
         
-        # Case Study Summary
         st.markdown("**📋 Case Study Overview:**")
         st.markdown(st.session_state.case_summary)
         
         st.markdown("---")
         
-        # Button to reset and start over
         if st.button("🔄 Reset All & Load New Case", use_container_width=True):
             st.session_state.case_study_text = ""
             st.session_state.roles = []
@@ -381,11 +336,30 @@ with right:
             st.rerun()
 
 
-# -------------------------------------------------------
-# LEFT PANEL – ROLES
-# -------------------------------------------------------
 with left:
     st.markdown("<div class='left-panel'>", unsafe_allow_html=True)
+    st.markdown("<h2>🔑 API Configuration</h2>", unsafe_allow_html=True)
+    
+    api_key_input = st.text_input(
+        "Enter OpenAI API Key",
+        type="password",
+        value=st.session_state.api_key,
+        placeholder="sk-proj-...",
+        help="Your API key is stored securely in this session only"
+    )
+    
+    if api_key_input != st.session_state.api_key:
+        st.session_state.api_key = api_key_input
+        if api_key_input:
+            st.session_state.client = OpenAI(api_key=api_key_input)
+            st.success("✅ API Key set!")
+    
+    if st.session_state.api_key:
+        st.markdown("🟢 **API Key Active**")
+    else:
+        st.warning("⚠️ No API Key set")
+    
+    st.markdown("---")
     st.markdown("<h2>👥 Available Roles</h2>", unsafe_allow_html=True)
     
     if st.session_state.roles:
@@ -406,13 +380,11 @@ with left:
             if st.button(btn_label, use_container_width=True, key=f"role_btn_{label}", type=btn_type):
                 st.session_state.selected_role = r
 
-                # Initialize chat for role if it doesn't exist
                 if label not in st.session_state.role_chats:
                     st.session_state.role_chats[label] = []
                 
                 st.rerun()
         
-        # Show selected role details below the roles
         st.markdown("---")
         if st.session_state.selected_role:
             current_label = f"{st.session_state.selected_role['name']} ({st.session_state.selected_role['title']})"
@@ -425,9 +397,6 @@ with left:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-# -------------------------------------------------------
-# CENTER PANEL – ROLE-BASED CHAT
-# -------------------------------------------------------
 with center:
 
     st.markdown("<h1>SMU COX Case Study Bot</h1>", unsafe_allow_html=True)
@@ -435,13 +404,9 @@ with center:
     if st.session_state.selected_role and st.session_state.roles:
         current_label = f"{st.session_state.selected_role['name']} ({st.session_state.selected_role['title']})"
         
-        # Initialize chat for current role if it doesn't exist
         if current_label not in st.session_state.role_chats:
             st.session_state.role_chats[current_label] = []
 
-        # -------------------------------------------------------
-        # ROLE DISPLAY AND ACTION BUTTONS (Display only, no dropdown)
-        # -------------------------------------------------------
         st.markdown("<div class='role-header'>", unsafe_allow_html=True)
         
         col1, col2, col3 = st.columns([2, 1, 1])
@@ -458,7 +423,6 @@ with center:
                 else:
                     st.warning("No messages to export")
             
-            # Show download button if PDF was generated
             if "pdf_data" in st.session_state and st.session_state.pdf_data:
                 st.download_button(
                     label="⬇️ Download PDF",
@@ -477,41 +441,37 @@ with center:
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("---")
 
-        # -------------------------------------------------------
-        # CHAT DISPLAY
-        # -------------------------------------------------------
-        # Display chat for THIS ROLE ONLY
         for msg in st.session_state.role_chats[current_label]:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        # -------------------------------------------------------
-        # USER INPUT
-        # -------------------------------------------------------
         user_input = st.chat_input("Ask something...")
 
         if user_input:
-            # Add user message
-            st.session_state.role_chats[current_label].append({"role": "user", "content": user_input})
+            if not st.session_state.client:
+                st.error("⚠️ Please enter your OpenAI API key in the left panel first!")
+            else:
+                st.session_state.role_chats[current_label].append({"role": "user", "content": user_input})
 
-            # Display user message
-            with st.chat_message("user"):
-                st.markdown(user_input)
+                with st.chat_message("user"):
+                    st.markdown(user_input)
 
-            # Generate response
-            prompt = build_system_prompt(st.session_state.selected_role, st.session_state.case_study_text)
+                prompt = build_system_prompt(st.session_state.selected_role, st.session_state.case_study_text)
 
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": prompt}] + st.session_state.role_chats[current_label]
-            )
+                try:
+                    response = st.session_state.client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "system", "content": prompt}] + st.session_state.role_chats[current_label]
+                    )
 
-            reply = response.choices[0].message.content
-            st.session_state.role_chats[current_label].append({"role": "assistant", "content": reply})
+                    reply = response.choices[0].message.content
+                    st.session_state.role_chats[current_label].append({"role": "assistant", "content": reply})
 
-            # Display assistant message
-            with st.chat_message("assistant"):
-                st.markdown(reply)
+                    with st.chat_message("assistant"):
+                        st.markdown(reply)
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+                    st.error("Please check your API key and try again.")
 
     elif not st.session_state.case_study_text:
         st.info("👉 Please upload or paste a case study in the right panel to get started.")
